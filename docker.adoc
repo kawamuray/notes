@@ -1,0 +1,17 @@
+== Enable taskstats in docker container
+
+Context: Build environment for taskstats-rs and jtaskstats.
+
+Accessing taskstats feature in docker container could be fail in 2 reasons:
+
+1. Lack of CAP_NET_ADMIN at `TASKSTATS_CMD_GET`.
+2. Non-root network namespace prohibited to get `GENL_FAMILY_ID` at `ctrl_getfamily@genetlink.c`.
+
+To avoid both: `docker run --network host --cap-add NET_ADMIN`
+No need of manual `setcap` since running process itself already granted.
+
+== Enable ptrace in docker container
+
+Context: jtaskstats attaching to target JVM.
+
+`docker run --cap-add SYS_PTRACE`

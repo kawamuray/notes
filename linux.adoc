@@ -1,0 +1,39 @@
+== Where is VFS capability loaded?
+
+Context: Researching how adding CAP_NET_ADMIN to file affects executable's taskstats and whether adding cap to .so files would adds any effect.
+
+1. `genl_family_rcv_msg@genetlink.c` calls `netlink_capable@af_netlink.c` to check source process's capability.
+2. `netlink_capable` eventually calls `__netlink_ns_capable@af_netlink.c` which calls `ns_capable@capability.c`.
+3. `ns_capable` calls `security_capable@security.c` with `current_cred()` which returns current task's `struct cred`.
+4. `security_capable` calls `cap_capable@commoncap.c` which tests whether the desired capability bit it raised in `cred->cap_effective`.
+
+=== Where is `cred->cap_effective` set
+
+1. `cap_effective` is set at `cap_bprm_set_creds@commoncap.c` calling `get_file_caps`.
+2. `cap_bprm_set_creds` is called by `security_bprm_set_creds` which is called by `prepare_binprm@exec.c`, `do_execve_common@exec.c`, `do_execve@exec.c`, `execve@exec.c`.
+
+
+== What's making TASKSTATS_CMD_GET to require CAP_NET_ADMIN
+
+Context: Researching whether there's a way to bypass capability check for enabling taskstats querying.
+
+1. netlink returns EPERM when a process asking `TASKSTATS_CMD_GET` doesn't have CAP_NET_ADMIN.
+2. It's returned by `genl_family_rcv_msg` as:
+[source, c]
+----
+	if ((ops->flags & GENL_ADMIN_PERM) &&
+	    !netlink_capable(skb, CAP_NET_ADMIN))
+		return -EPERM;
+----
+3. `ops->flags` is defined at `taskstats_ops[]@taskstats.c` as:
+[source, c]
+----
+static const struct genl_ops taskstats_ops[] = {
+	{
+		.cmd		= TASKSTATS_CMD_GET,
+		.doit		= taskstats_user_cmd,
+		.policy		= taskstats_cmd_get_policy,
+		.flags		= GENL_ADMIN_PERM,
+...
+----
+4. So any operations with `GENL_ADMIN_PERM` set requires `CAP_NET_ADMIN`.
