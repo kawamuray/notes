@@ -1,0 +1,10 @@
+== setcap disables LD_LIBRARY_PATH
+
+Context: jtaskstats execution failed by `libjvm.so: cannot open shared object file: No such file or directory` despite I set `LD_LIBRARY_PATH` properly.
+
+`man ld.so` says:
+----
+o  Using the environment variable LD_LIBRARY_PATH.  Except if the executable is a set-user-ID/set-group-ID binary, in which case it is ignored.
+----
+
+Apparently by https://stackoverflow.com/questions/9843178/linux-capabilities-setcap-seems-to-disable-ld-library-path[security reason]. LD_PRELOAD as well.
