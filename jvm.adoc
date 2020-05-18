@@ -1,0 +1,38 @@
+== Embed JVM instance in a process and interact with it
+
+Context: Attempted to use embed JVM for jtaskstats to execute jthreadinfo but failed by setcap making LD_LIBRARY_PATH disabled.
+
+Can use https://docs.oracle.com/javase/7/docs/technotes/guides/jni/spec/invocation.html[Invocation API].
+
+Example using rust's jni:
+[source, rust]
+----
+    let jvm_args = InitArgsBuilder::new()
+        .option(&format!(
+            "-Djava.class.path={}:{}",
+            jthreadinfo_jar.as_ref().to_str().unwrap(),
+            jdi_jar_path().to_str().unwrap(),
+        ))
+        .build()
+        .expect("build jvm args");
+    let jvm = JavaVM::new(jvm_args)?;
+    let env = jvm.attach_current_thread()?;
+    let threads = env
+        .call_static_method(
+            "jthreadinfo/JThreadInfo",
+            "listThreads",
+            "(I)[Ljthreadinfo/ThreadInfo;",
+            &[JValue::from(pid as i32)],
+        )?
+        .l()
+        .expect("listThreads must return jobject")
+        .into_inner() as jobjectArray;
+    let len = env.get_array_length(threads)?;
+    for i in 0..len {
+        let info = env.get_object_array_element(threads, i)?;
+        let tid = env
+            .get_field(info, "tid", "J")?
+            .j()
+            .expect("tid must be long");
+        ...
+----
