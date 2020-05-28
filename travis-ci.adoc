@@ -1,0 +1,5 @@
+== Configure multiple language's SDK
+
+Context: jtaskstats requires both Rust SDK and JDK to build but travis.yml accepts just one `language:`.
+
+It seems that we can just configure the sub-SDK manually by kicking travis's installer manually. Example to install jdk on `language: rust` project: https://github.com/kawamuray/jtaskstats/commit/c61ecea4ee90d3bf74cc99e18c5ca6b4ad71bf8c#diff-354f30a63fb0907d4ad57269548329e3R11
