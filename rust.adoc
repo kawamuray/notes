@@ -1,0 +1,65 @@
+== Drop won't be occur for values owned in separate threads when main panics
+
+Context: phoseum doesn't terminates vlc process when panic occurs in main thread.
+
+Here's tiny program to examine rust's behavior for drops.
+
+[source, rust]
+----
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+#[derive(Debug)]
+struct Foo(&'static str);
+
+impl Drop for Foo {
+    fn drop(&mut self) {
+        println!("Drop {}", self.0);
+    }
+}
+
+fn do_panic() {
+    println!("panicing main thread");
+    panic!("ahh");
+}
+
+fn main() {
+    let _foo1 = Foo("foo");
+    let foo_moved = Foo("foo_moved");
+    let foo_shared = Arc::new(Foo("foo_shared"));
+    let foo_shared_copy = Arc::clone(&foo_shared);
+
+    let term = Arc::new(AtomicBool::new(false));
+    let term_copy = Arc::clone(&term);
+    let th = thread::spawn(move || {
+        println!("foo_moved has moved to another thread: {:?}", foo_moved);
+        println!(
+            "foo_shared_copy has moved to another thread: {:?}",
+            foo_shared_copy
+        );
+        while !term_copy.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+    thread::sleep(Duration::from_secs(1));
+    do_panic();
+    term.store(true, Ordering::Relaxed);
+    th.join().unwrap();
+}
+----
+
+Result:
+----
+$ ./droptest
+foo_moved has moved to another thread: Foo("foo_moved")
+foo_shared_copy has moved to another thread: Foo("foo_shared")
+panicing main thread
+thread 'main' panicked at 'ahh', droptest.rs:17:5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Drop foo
+----
+
+
+As https://doc.rust-lang.org/std/ops/trait.Drop.html#panics:[official doc] explains, drop occurs while stack unwinding and so is likely doesn't takes care of other thread's owned values (in different stack) before process termination.
