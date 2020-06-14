@@ -69,7 +69,7 @@ As https://doc.rust-lang.org/std/ops/trait.Drop.html#panics:[official doc] expla
 
 Context: Wondering which is better performance wise to map from string to another value: match with string arms or prepared HashMap with string keys.
 
-Did microbenchmark as it can be seen in ./rust-bench/src/match_vs_map.rs .
+Did microbenchmark as it can be seen in link:./rust-bench/src/match_vs_map.rs[] .
 
 Result:
 ----
