@@ -63,3 +63,18 @@ Drop foo
 
 
 As https://doc.rust-lang.org/std/ops/trait.Drop.html#panics:[official doc] explains, drop occurs while stack unwinding and so is likely doesn't takes care of other thread's owned values (in different stack) before process termination.
+
+
+== `match &str { "xxx" => ... }` vs `HashMap<&str, ...>`
+
+Context: Wondering which is better performance wise to map from string to another value: match with string arms or prepared HashMap with string keys.
+
+Did microbenchmark as it can be seen in ./rust-bench/src/match_vs_map.rs .
+
+Result:
+----
+test match_vs_map::bm_hashmap ... bench:         384 ns/iter (+/- 63)
+test match_vs_map::bm_match   ... bench:          38 ns/iter (+/- 4)
+----
+
+Match is way faster than hashmap.
