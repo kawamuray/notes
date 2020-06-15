@@ -78,3 +78,11 @@ test match_vs_map::bm_match   ... bench:          38 ns/iter (+/- 4)
 ----
 
 Match is way faster than hashmap.
+
+Edit: In order to make sure that there was no performance penalty caused by `lazy_static` which implements `Deref` for lazily evaluate initialization expression, I added another test that uses locally prebuilt `HashMap` instance. The result was as below confirming the difference is not due to `lazy_static`.
+
+----
+test match_vs_map::bm_hashmap_local  ... bench:         405 ns/iter (+/- 47)
+test match_vs_map::bm_hashmap_static ... bench:         393 ns/iter (+/- 111)
+test match_vs_map::bm_match          ... bench:          43 ns/iter (+/- 2)
+----
