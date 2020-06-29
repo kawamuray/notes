@@ -1,0 +1,103 @@
+=== C function with non-void return type but without return statement
+
+Context: I was writing some C code in Arduino IDE and struggle to find a bug which was caused by a function that supposed to return `struct x` but is missing `return statement`.
+
+Below code compiles despite the function `new_foo_ng` lacks return statement (but with warning so it fails with `-Werror`):
+[source,c]
+----
+#include <stdio.h>
+
+struct foo {
+    int n;
+};
+
+struct foo new_foo_ng() {
+    struct foo f;
+    f.n = 5;
+    // missing return
+}
+
+struct foo new_foo_ok() {
+    struct foo f;
+    f.n = 10;
+    return f;
+}
+
+int main(void) {
+    struct foo f;
+    f = new_foo_ng();
+    printf("NG f.n = %d\n", f.n);
+    f = new_foo_ok();
+    printf("OK f.n = %d\n", f.n);
+    return 0;
+}
+----
+
+----
+$ gcc missing-return.c
+missing-return.c:11:1: warning: control reaches end of non-void function [-Wreturn-type]
+}
+^
+1 warning generated.
+----
+
+The execution result:
+----
+$ ./a.out
+NG f.n = 0
+OK f.n = 10
+----
+
+Question: where does that `0` value came from? (what value is assigned to `struct foo f` after `new_foo_ng` return?)
+
+Looking into assembly:
+[source,asm]
+----
+_new_foo_ng:                            ## @new_foo_ng
+	.cfi_startproc
+## %bb.0:
+	pushq	%rbp
+	.cfi_def_cfa_offset 16
+	.cfi_offset %rbp, -16
+	movq	%rsp, %rbp
+	.cfi_def_cfa_register %rbp
+	movl	$5, -16(%rbp)
+	movl	-8(%rbp), %eax
+	popq	%rbp
+	retq
+(snip)
+_new_foo_ok:                            ## @new_foo_ok
+	.cfi_startproc
+## %bb.0:
+	pushq	%rbp
+	.cfi_def_cfa_offset 16
+	.cfi_offset %rbp, -16
+	movq	%rsp, %rbp
+	.cfi_def_cfa_register %rbp
+	movl	$10, -8(%rbp)
+	movl	-8(%rbp), %eax
+	popq	%rbp
+	retq
+(snip)
+----
+
+The only meaningful difference between two is below:
+[source,asm]
+----
+	movl	$5, -16(%rbp)
+(vs)
+	movl	$10, -8(%rbp)
+----
+
+The interpretation of this should be, the function with return type `struct foo` *anyway* allocates `struct foo` for return value on stack, and move its address to `eax` register before return. The `new_foo_ok` however returns the valid value because it moves assignment value to this "struct foo for return" while `new_foo_ng` stores it into local variable of `struct foo` allocated in different offset and never be referred later on.
+
+So even without the return statement, C function allocates value of size of the return type and returns it at the end no matter what function body does such as if I express it in pseudo code:
+[source,c]
+----
+struct foo new_foo_ng() {
+    struct foo __ret;
+    struct foo f;
+    f.n = 10;
+    return __ret;
+}
+----
