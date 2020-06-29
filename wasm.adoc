@@ -1,0 +1,17 @@
+== Read/Write JS object fields from Rust
+
+Context: Despite that https://docs.rs/wasm-bindgen/0.2.63/wasm_bindgen/struct.JsValue.html:[JsValue] provides various type conversion methods, the way accessing JS object like `{abc: "def"}` isn't mentioned anywhere.
+
+Use https://rustwasm.github.io/wasm-bindgen/api/js_sys/Reflect/index.html:[Reflect] from `js_sys` crate.
+
+[source,rust]
+----
+let value = Reflect::get(&obj, &JsValue::from_str("index"));
+----
+
+== `wasm_bindgen` doesn't support `Vec<_>`
+
+Context: The sruct containing `Vec<_>` in its field doesn't allowed to be annotated with `#[wasm_bindgen]`.
+
+As explained in this https://github.com/rustwasm/wasm-bindgen/issues/111:[issue] currently it is not supported.
+There are many workarounds suggested but seems like the way using https://github.com/cloudflare/serde-wasm-bindgen:[serde-wasm-bindgen] is the most promising as of now. Or, just manually acccess individual fields with the above `Reflect`.
