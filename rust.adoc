@@ -86,3 +86,48 @@ test match_vs_map::bm_hashmap_local  ... bench:         405 ns/iter (+/- 47)
 test match_vs_map::bm_hashmap_static ... bench:         393 ns/iter (+/- 111)
 test match_vs_map::bm_match          ... bench:          43 ns/iter (+/- 2)
 ----
+
+
+== Allow trailing comma in macro repeat pattern
+
+https://stackoverflow.com/questions/43143327/how-to-allow-optional-trailing-commas-in-macros
+
+`$(,)?`
+
+
+== `macro_rules` application order is determined by declaration order
+
+Given below macro declarations:
+
+[source,rust]
+----
+    ($lhs:expr, $op:ident, $rhs:expr ; $jump:ident) => {
+    ...
+    };
+    ($($reg:ident),+ = $lhs:expr, $op:ident, $rhs:expr ; $jump:ident) => {
+    ...
+    };
+----
+
+with the usages below:
+
+[source,rust]
+----
+i!(M,Plus,1;NOP);
+or
+i!(M=M,Plus,1;NOP);
+----
+
+the latter gets expanded with captures `$lhs:expr=(M=M)` by the 1st pattern, because while the intention is to match on 2nd with captures `$reg=(M) and $lhs=(M)`, the first can also match validly as "expression".
+
+Flipping the order of two and putting more complex one on the top makes it behave as intended.
+
+[source,rust]
+----
+    ($($reg:ident),+ = $lhs:expr, $op:ident, $rhs:expr ; $jump:ident) => {
+    ...
+    };
+    ($lhs:expr, $op:ident, $rhs:expr ; $jump:ident) => {
+    ...
+    };
+----
