@@ -187,6 +187,7 @@ Then I turned out that what makes this difference is the `Deref` trait implement
 
 As the https://doc.rust-lang.org/std/string/struct.String.html#deref-methods[document shows] `String` implements `Deref<Target = str>`.
 The https://doc.rust-lang.org/src/core/ops/deref.rs.html#19[document] of `Deref` says that by implementing `Deref` for `U` against `T`, the value of `T`:
+
 * can be coerced into `&U` and
 * implements all the immutable methods of type `U`
 
