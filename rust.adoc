@@ -190,6 +190,8 @@ The https://doc.rust-lang.org/src/core/ops/deref.rs.html#19[document] of `Deref`
 * can be coerced into `&U` and
 * implements all the immutable methods of type `U`
 
+As an another example, `PathBuf` implements `Deref<Path>`: https://doc.rust-lang.org/std/path/struct.PathBuf.html#deref-methods
+
 By adding below impl for `Deref` the above snippet becomes compilable.
 
 [source,rust]
