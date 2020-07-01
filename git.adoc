@@ -1,0 +1,5 @@
+== Create a new branch in existing repo without inheriting any history
+
+Context: Make gh-pages but why would I make it from master while I anyway remove all files?
+
+`git checkout --orphan branch-name` creates and checkout new branch with no parent commit.
