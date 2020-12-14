@@ -1,0 +1,190 @@
+== Learn eBPF by running it with low level tools
+
+Start by this guide:
+
+https://docs.cilium.io/en/stable/bpf/
+
+
+[source,c]
+----
+#include <linux/bpf.h>
+
+#ifndef __section
+# define __section(NAME)                  \
+   __attribute__((section(NAME), used))
+#endif
+
+__section("prog")
+void syscall__execve(void *ctx)
+{
+    char fmt[] = "Hello world!";
+    bpf_trace_printk(fmt, sizeof(fmt));
+}
+
+char __license[] __section("license") = "GPL";
+----
+
+Compile and generate ebpf machine code (LLVM supports `bpf` target):
+
+----
+$ clang -O2 -Wall -target bpf -c bpf-test.c -o bpf-test.o
+
+# Alternatively
+$ clang -O2 -Wall -emit-llvm -c bpf-test.c -o - | llc -march=bpf -filetype=obj -o bpf-test.o
+bpf-test.c:12:5: warning: implicit declaration of function 'bpf_trace_printk' is invalid in C99 [-Wimplicit-function-declaration]
+    bpf_trace_printk(fmt, sizeof(fmt));
+    ^
+1 warning generated.
+----
+
+Dump instructions:
+
+----
+$ llvm-objdump -S bpf-test.o 
+
+bpf-test.o:     file format ELF64-BPF
+
+Disassembly of section prog:
+syscall__execve:
+       0:       b7 01 00 00 00 00 00 00         r1 = 0
+       1:       73 1a fc ff 00 00 00 00         *(u8 *)(r10 - 4) = r1
+       2:       b7 01 00 00 72 6c 64 21         r1 = 560229490
+       3:       63 1a f8 ff 00 00 00 00         *(u32 *)(r10 - 8) = r1
+       4:       18 01 00 00 48 65 6c 6c 00 00 00 00 6f 20 77 6f         r1 = 8031924123371070792 ll
+       6:       7b 1a f0 ff 00 00 00 00         *(u64 *)(r10 - 16) = r1
+       7:       bf a1 00 00 00 00 00 00         r1 = r10
+       8:       07 01 00 00 f0 ff ff ff         r1 += -16
+       9:       b7 02 00 00 0d 00 00 00         r2 = 13
+      10:       85 10 00 00 ff ff ff ff         call -1
+      11:       95 00 00 00 00 00 00 00         exit
+----
+
+Seems we can use `bpftool`'s command to load bpf program:
+
+----
+$ sudo /usr/sbin/bpftool prog load ./bpf-test.o /sys/fs/bpf/test 
+libbpf: ./bpf-test.o doesn't provide kernel version
+Error: failed to load program
+----
+
+Later is troubleshooting.
+
+=== ./bpf-test.o doesn't provide kernel version
+
+The check causing this error seems to have removed already: https://github.com/libbpf/libbpf/commit/de3c5a17cb0bca54f1d013cf99301182ddae1d62
+but remains in currently using version of libbpf.
+
+To workaround we can configure kernel version in particular section. The format of version is likely 8-bit wise shifted 32bit unsigned int according to source code of libbpf.
+
+[source,c]
+----
+unsigned int kern_version __section("version") = (3 << 16) + (10 << 8) + 0;
+----
+
+----
+$ sudo /usr/sbin/bpftool prog load ./bpf-test.o /sys/fs/bpf/test 
+libbpf: failed to guess program type based on section name prog
+Error: failed to load program
+----
+
+=== failed to guess program type based on section name prog
+
+libbpf infers what event to attach the bpf function based on the conventionally named section name.
+We have to give it a conventional name such as:
+
+----
+__section("tracepoint/sched:sched_process_exec")
+// or 
+__section("kprobe/syscall__execve")
+----
+
+----
+$ sudo /usr/sbin/bpftool prog load ./bpf-test.o /sys/fs/bpf/test 
+libbpf: no .text section found yet relo into text exist
+libbpf: failed to relocate 'kprobe/syscall__execve'
+libbpf: failed to load object './bpf-test.o'
+Error: failed to load program
+----
+
+
+=== no .text section found yet relo into text exist
+
+Apparently the `bpf_trace_printk` function call is failed to be resolved its location and bpf loader is looking for a generic `.text` section to see for its implementation. Workaround by removing it's invocatino for now.
+
+
+----
+// __section("tracepoint/sched:sched_process_exec")
+__section("kprobe/syscall__execve")
+void syscall__execve(void *ctx)
+{
+    /* char fmt[] = "Hello world!"; */
+    /* bpf_trace_printk(fmt, sizeof(fmt)); */
+}
+----
+
+----
+$ sudo /usr/sbin/bpftool prog load ./bpf-test.o /sys/fs/bpf/test 
+libbpf: load bpf program failed: Permission denied
+libbpf: -- BEGIN DUMP LOG ---
+libbpf: 
+0: (95) exit
+R0 !read_ok
+
+libbpf: -- END LOG --
+libbpf: failed to load program 'kprobe/syscall__execve'
+libbpf: failed to load object './bpf-test.o'
+Error: failed to load program
+----
+
+=== load bpf program failed: Permission denied
+
+eBPF verifier checks if `R0`(return value register) is set in prior to return.
+Changing the function to return integer value.
+
+----
+# do_check@verifier.c
+
+				/* eBPF calling convetion is such that R0 is used
+				 * to return the value from eBPF program.
+				 * Make sure that it's readable at this time
+				 * of bpf_exit, which means that program wrote
+				 * something into it earlier
+				 */
+				err = check_reg_arg(env, BPF_REG_0, SRC_OP);
+				if (err)
+					return err;
+----
+
+----
+int syscall__execve(void *ctx)
+{
+    return 0;
+}
+----
+
+
+===  can't mount BPF file system to pin the object (test): mount --make-private . failed: Invalid argument
+
+The FILE argument to pin the prog must be a subpath of a directory mounting `bpffs`. Just mount the bpffs then.
+
+----
+sudo /usr/sbin/bpftool prog load test.o test
+Error: can't mount BPF file system to pin the object (test): mount --make-private . failed: Invalid argument
+Error: failed to pin program
+----
+
+----
+sudo mount bpffs /sys/fs/bpf -t bpf
+sudo /usr/sbin/bpftool prog load test.o /sys/fs/bpf/test 
+----
+
+
+=== Error: can't pin the object (/sys/fs/bpf/test): Operation not permitted
+
+Now `bpf()` call for loading program passes but the command still fails at attempting to pin the loaded program into fs:
+
+----
+$ grep 'bpf(' /tmp/load
+bpf(BPF_PROG_LOAD, {prog_type=BPF_PROG_TYPE_KPROBE, insn_cnt=2, insns=0x2730c10, license="GPL", log_level=0, log_size=0, log_buf=NULL, kern_version=KERNEL_VERSION(3, 10, 0), prog_flags=0, prog_name="syscall__execve", prog_ifindex=0, expected_attach_type=BPF_CGROUP_INET_INGRESS}, 72) = 3
+bpf(BPF_OBJ_PIN, {pathname="/sys/fs/bpf/test", bpf_fd=3, file_flags=0}, 72) = -1 EPERM (Operation not permitted)
+----
