@@ -188,3 +188,318 @@ $ grep 'bpf(' /tmp/load
 bpf(BPF_PROG_LOAD, {prog_type=BPF_PROG_TYPE_KPROBE, insn_cnt=2, insns=0x2730c10, license="GPL", log_level=0, log_size=0, log_buf=NULL, kern_version=KERNEL_VERSION(3, 10, 0), prog_flags=0, prog_name="syscall__execve", prog_ifindex=0, expected_attach_type=BPF_CGROUP_INET_INGRESS}, 72) = 3
 bpf(BPF_OBJ_PIN, {pathname="/sys/fs/bpf/test", bpf_fd=3, file_flags=0}, 72) = -1 EPERM (Operation not permitted)
 ----
+
+
+== Understanding bcc APIs
+
+Looking at `offcputime.py`.
+
+How does `counts = b.get_table("counts")` work?
+
+----
+# obtain table ID and fd
+        map_id = lib.bpf_table_id(self.module, name)
+        map_fd = lib.bpf_table_fd(self.module, name)
+
+# then creates a Table
+        return Table(self, map_id, map_fd, keytype, leaftype, name, reducer=reducer)
+
+# Table is...?
+
+    Table = Table
+
+# table.py
+def Table(bpf, map_id, map_fd, keytype, leaftype, name, **kwargs):
+    """Table(bpf, map_id, map_fd, keytype, leaftype, **kwargs)
+
+    Create a python object out of a reference to a bpf table handle"""
+
+
+# lookup table type
+    ttype = lib.bpf_table_type_id(bpf.module, map_id)
+
+
+# bcc_common.cc
+# call to ebpf::BPFModule#table_type
+int bpf_table_type_id(void *program, size_t id) {
+  auto mod = static_cast<ebpf::BPFModule *>(program);
+  if (!mod) return -1;
+  return mod->table_type(id);
+}
+
+# bpf_module.cc
+int BPFModule::table_type(size_t id) const {
+  if (id >= tables_.size())
+    return -1;
+  return tables_[id]->type;
+}
+
+# tables_ is
+  std::vector<TableDesc *> tables_;
+
+# ->type is
+  int type;
+
+
+# self.module creation?
+            self.module = lib.bpf_module_create_c_from_string(text,
+                                                              self.debug,
+                                                              cflags_array, len(cflags_array),
+                                                              allow_rlimit, device)
+
+
+# bcc_common.cc
+# ->load_string
+void * bpf_module_create_c_from_string(const char *text, unsigned flags, const char *cflags[],
+                                       int ncflags, bool allow_rlimit, const char *dev_name) {
+  auto mod = new ebpf::BPFModule(flags, nullptr, true, "", allow_rlimit, dev_name);
+  if (mod->load_string(text, cflags, ncflags) != 0) {
+    delete mod;
+    return nullptr;
+  }
+  return mod;
+}
+
+# bpf_module.cc
+// load a C text string
+int BPFModule::load_string(const string &text, const char *cflags[], int ncflags) {
+  if (!sections_.empty()) {
+    fprintf(stderr, "Program already initialized\n");
+    return -1;
+  }
+  if (int rc = load_cfile(text, true, cflags, ncflags))
+    return rc;
+  if (rw_engine_enabled_) {
+    if (int rc = annotate())
+      return rc;
+  } else {
+    annotate_light();
+  }
+
+  if (int rc = finalize())
+    return rc;
+  return 0;
+}
+
+// load an entire c file as a module
+int BPFModule::load_cfile(const string &file, bool in_memory, const char *cflags[], int ncflags) {
+  ClangLoader clang_loader(&*ctx_, flags_);
+  if (clang_loader.parse(&mod_, *ts_, file, in_memory, cflags, ncflags, id_,
+                         *func_src_, mod_src_, maps_ns_, fake_fd_map_, perf_events_))
+    return -1;
+  return 0;
+}
+
+
+# ClangLoader#parse
+  if (do_compile(mod, ts, in_memory, flags_cstr, flags_cstr_rem, main_path,
+                 main_buf, id, func_src, mod_src, true, maps_ns, fake_fd_map, perf_events)) {
+
+# ClangLoader::do_compile
+  BFrontendAction bact(os1, flags_, ts, id, main_path, func_src, mod_src,
+                       maps_ns, fake_fd_map, perf_events);
+  if (!compiler1.ExecuteAction(bact))
+    return -1;
+
+
+# b_frontend_action.cc
+// Open table FDs when bpf tables (as denoted by section("maps*") attribute)
+// are declared.
+bool BTypeVisitor::VisitVarDecl(VarDecl *Decl) {
+...
+    } else if (section_attr == "maps/export") {
+      if (table.name.substr(0, 2) == "__")
+        table.name = table.name.substr(2);
+      Path local_path({fe_.id(), table.name});
+      Path global_path({table.name});
+      if (!fe_.table_storage().Find(local_path, table_it)) {
+        error(GET_BEGINLOC(Decl), "reference to undefined table");
+        return false;
+      }
+      fe_.table_storage().Insert(global_path, table_it->second.dup());
+      return true;
+    } else if(section_attr == "maps/shared") {
+      if (table.name.substr(0, 2) == "__")
+        table.name = table.name.substr(2);
+      Path local_path({fe_.id(), table.name});
+      Path maps_ns_path({"ns", fe_.maps_ns(), table.name});
+      if (!fe_.table_storage().Find(local_path, table_it)) {
+        error(GET_BEGINLOC(Decl), "reference to undefined table");
+        return false;
+      }
+      fe_.table_storage().Insert(maps_ns_path, table_it->second.dup());
+      return true;
+    }
+
+
+# At this point, table reference is inserted into `TableStorage`
+
+
+# bpf_module_rw_engine.cc
+
+int BPFModule::annotate() {
+...
+  for (auto it = ts_->lower_bound(path), up = ts_->upper_bound(path); it != up; ++it) {
+    TableDesc &table = it->second;
+    tables_.push_back(&it->second);
+
+# Then TableDesc gets inserted into `tables_` field through iterating `ts_` field (= `TableStorage`)
+----
+
+Who annotates the table with special section name?
+
+
+[source,c]
+----
+# helpers.h
+#define BPF_STACK_TRACE(_name, _max_entries) \
+  BPF_TABLE("stacktrace", int, struct bpf_stacktrace, _name, roundup_pow_of_two(_max_entries))
+
+#define BPF_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries) \
+BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, 0)
+
+// Changes to the macro require changes in BFrontendAction classes
+#define BPF_F_TABLE(_table_type, _key_type, _leaf_type, _name, _max_entries, _flags) \
+struct _name##_table_t { \
+  _key_type key; \
+  _leaf_type leaf; \
+  _leaf_type * (*lookup) (_key_type *); \
+  _leaf_type * (*lookup_or_init) (_key_type *, _leaf_type *); \
+  _leaf_type * (*lookup_or_try_init) (_key_type *, _leaf_type *); \
+  int (*update) (_key_type *, _leaf_type *); \
+  int (*insert) (_key_type *, _leaf_type *); \
+  int (*delete) (_key_type *); \
+  void (*call) (void *, int index); \
+  void (*increment) (_key_type, ...); \
+  int (*get_stackid) (void *, u64); \
+  u32 max_entries; \
+  int flags; \
+}; \
+__attribute__((section("maps/" _table_type))) \
+struct _name##_table_t _name = { .flags = (_flags), .max_entries = (_max_entries) }; \
+BPF_ANNOTATE_KV_PAIR(_name, _key_type, _leaf_type)
+
+# and call against those functions are dynamically processed during compilation...
+
+# b_frontend_action.cc
+// convert calls of the type:
+//  table.foo(&key)
+// to:
+//  bpf_table_foo_elem(bpf_pseudo_fd(table), &key [,&leaf])
+bool BTypeVisitor::VisitCallExpr(CallExpr *Call) {
+...
+          string lookup = "bpf_map_lookup_elem_(bpf_pseudo_fd(1, " + fd + ")";
+          string update = "bpf_map_update_elem_(bpf_pseudo_fd(1, " + fd + ")";
+          txt  = "({typeof(" + name + ".leaf) *leaf = " + lookup + ", " + arg0 + "); ";
+          txt += "if (!leaf) {";
+          txt += " " + update + ", " + arg0 + ", " + arg1 + ", BPF_NOEXIST);";
+          txt += " leaf = " + lookup + ", " + arg0 + ");";
+          if (memb_name == "lookup_or_init") {
+            txt += " if (!leaf) return 0;";
+          }
+          txt += "}";
+          txt += "leaf;})";
+
+# so the actual implementation of table.update() is
+# helpers.h
+static inline __attribute__((always_inline))
+BCC_SEC("helpers")
+int bpf_map_update_elem_(uintptr_t map, void *key, void *value, u64 flags) {
+  return bpf_map_update_elem((void *)map, key, value, flags);
+}
+
+# `long bpf_map_update_elem(struct bpf_map *map, const void *key, const` is apparently from
+# bpf-helpers https://man7.org/linux/man-pages/man7/bpf-helpers.7.html
+----
+
+After getting table instance, value lookup eventually calls `lib.bpf_lookup_elem`
+
+----
+class TableBase(MutableMapping):
+...
+    def __getitem__(self, key):
+        leaf = self.Leaf()
+        res = lib.bpf_lookup_elem(self.map_fd, ct.byref(key), ct.byref(leaf))
+        if res < 0:
+            raise KeyError
+        return leaf
+----
+
+== Modifying offcputime.py to provide real-time detection events
+
+There are two possible ways to pass events from eBPF program to userspace.
+
+* perf event - traditional pipeline which supports arbitrary data (bytes)
+* ring buffer - according to the https://www.kernel.org/doc/html/latest/bpf/ringbuf.html:[kernel doc], it is built to enable inter-cpucore ordering and efficient memory usage
+
+I tried to use perf events to pass events from eBPF to userspace.
+Basically what we need is,
+
+in bpf program:
+
+[source,c]
+----
+BPF_PERF_OUTPUT(events); // map declaration
+
+events.perf_submit(ctx, &data, sizeof(data)); // submit event
+// the above statement is processed by bcc during compilation so it does look like a method invocation,
+// but it is not processed by C lang.
+----
+
+in bcc python script:
+
+[source,python]
+----
+def print_event(cpu, data, size):
+    event = b["events"].event(data) // This will automatically resolve declaration type (struct) and enables to unpack bytes into separated fields which has C types
+    print(event.pid) // An attribute access will automatically interpreted as C's struct access, so no manual deserialization required
+
+b["events"].open_perf_buffer(print_event)
+while 1:
+    try:
+        b.perf_buffer_poll()
+    except KeyboardInterrupt:
+        exit()
+----
+
+
+likewise, it seems possible to do the same with ring_buffer. from `examples/ringbuf/ringbuf_output.py`:
+
+[source,c]
+----
+BPF_RINGBUF_OUTPUT(buffer, 1 << 4);
+
+buffer.ringbuf_output(&event, sizeof(event), 0);
+----
+
+and
+
+[source,python]
+----
+b['buffer'].open_ring_buffer(callback)
+try:
+    while 1:
+        b.ring_buffer_poll()
+        # or b.ring_buffer_consume()
+        time.sleep(0.5)
+except KeyboardInterrupt:
+    sys.exit()
+----
+
+
+=== No events appeared by modified offcputime-events.py
+
+The initial version of offcputime-events.py didn't worked. Despite there was no errors, it didn't show any events even if I ran it system-wide, which on the other hand, `/usr/share/bcc/tools/offcputime` printed a lot of events.
+
+Comparing `offcputime.py` between on the system (CentOS 7) and at latest bcc repo, it turns out that there's a diff in function signature:
+
+[source,diff]
+----
+-struct rq;
+-
+-int oncpu(struct pt_regs *ctx, struct rq *rq, struct task_struct *prev) {
++int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
+----
+
+it seems that the function signature that is attached to kprobe evaluated against the original function's signature and silently fails to probe if they don't match. (any possible way to get that error?)
+The difference itself should be due to different kernel versions expected.
