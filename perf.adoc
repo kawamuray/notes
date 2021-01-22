@@ -1,0 +1,226 @@
+== Implement a stack walking (in Rust)
+
+
+General idea is to 1. trap a task execution at a point, 2. obtain the task's registers, 3. get address of the top of the stack and walk through frames.
+
+
+=== Trap a task execution
+
+Possible by a signal. It is possible to send a signal to an individual threads rather than to one of threads in a process, so we can pinpoint particular thread that we want to take stack trace by specifying its TID.
+
+----
+$ ps -efT | grep blocked-app
+user   3121   3121  23092 23 15:35 pts/0    00:00:14 target/debug/blocked-app-demo /tmp
+user   3121   3197  23092 33 15:35 pts/0    00:00:15 target/debug/blocked-app-demo /tmp
+user   3121   3198  23092 90 15:35 pts/0    00:00:41 target/debug/blocked-app-demo /tmp
+user   3121   3199  23092  0 15:35 pts/0    00:00:00 target/debug/blocked-app-demo /tmp
+user   3121   3200  23092 88 15:35 pts/0    00:00:40 target/debug/blocked-app-demo /tmp
+user   3121   3201  23092  0 15:35 pts/0    00:00:00 target/debug/blocked-app-demo /tmp
+user   3121   3202  23092  0 15:35 pts/0    00:00:00 target/debug/blocked-app-demo /tmp
+
+$ kill -PROF 3121
+$ kill -PROF 3198
+
+@ blocked-app-demo
+$ cargo run /tmp
+Signal num: 27 on ThreadId(1)
+Signal num: 27 on ThreadId(3)
+----
+
+This approach is used by async-profiler as well. Seems like SIGPROF is a typical choice to use for a such purpose.
+
+=== Obtain task registers
+
+This is possible out-of-the-box because the signal handler passed to `sigaction(2)` can take 3 arguments when `SA_SIGINFO` flag is passed to. Arguments are respectively, signal number, detailed information of the signaling context like sender's PID, address bound violated (in case of SEGV?) and so on, and the `void*` pointer to opaque data which is actually an instance of `ucontext_t`.
+
+`ucontext_t` represents the "context" information of the trapped task, hence it contains register values too, specifically in `uc_mcontext` field which its actual structure is platform-dependent.
+
+In macOS(x64), it looks like this:
+
+[sources,c]
+----
+// /Library/Developer/CommandLineTools/SDKs/MacOSX11.0.sdk/usr/include/i386/_mcontext.h
+#define _STRUCT_MCONTEXT64      struct __darwin_mcontext64
+_STRUCT_MCONTEXT64
+{
+        _STRUCT_X86_EXCEPTION_STATE64   __es;
+        _STRUCT_X86_THREAD_STATE64      __ss;
+        _STRUCT_X86_FLOAT_STATE64       __fs;
+};
+
+// /Library/Developer/CommandLineTools/SDKs/MacOSX11.0.sdk/usr/include/mach/i386/_structs.hs
+#define _STRUCT_X86_THREAD_STATE64      struct __darwin_x86_thread_state64
+_STRUCT_X86_THREAD_STATE64
+{
+        __uint64_t      __rax;
+        __uint64_t      __rbx;
+        __uint64_t      __rcx;
+        __uint64_t      __rdx;
+        __uint64_t      __rdi;
+        __uint64_t      __rsi;
+        __uint64_t      __rbp;
+        __uint64_t      __rsp;
+        __uint64_t      __r8;
+        __uint64_t      __r9;
+        __uint64_t      __r10;
+        __uint64_t      __r11;
+        __uint64_t      __r12;
+        __uint64_t      __r13;
+        __uint64_t      __r14;
+        __uint64_t      __r15;
+        __uint64_t      __rip;
+        __uint64_t      __rflags;
+        __uint64_t      __cs;
+        __uint64_t      __fs;
+        __uint64_t      __gs;
+};
+----
+
+
+In linux(x64), it looks like this:
+
+[sources,c]
+----
+// /usr/include/sys/ucontext.h 
+* Context to describe whole processor state.  */
+typedef struct
+  {
+    gregset_t gregs;
+    /* Note that fpregs is a pointer.  */
+    fpregset_t fpregs;
+    __extension__ unsigned long long __reserved1 [8];
+} mcontext_t;
+
+/* Userlevel context.  */
+typedef struct ucontext
+  {
+    unsigned long int uc_flags;
+    struct ucontext *uc_link;
+    stack_t uc_stack;
+    mcontext_t uc_mcontext;
+    __sigset_t uc_sigmask;
+    struct _libc_fpstate __fpregs_mem;
+  } ucontext_t;
+----
+
+where `gregset_t gregs` is an array of register values indexed by the register number.
+
+=== Stack walking
+
+There is a helpful gist snippet showing this procedure in C: https://gist.github.com/aperezdc/30ad0bcca02301312a290cfee5c476e9
+
+1. Obtain address of RBP (frame base pointer) and RIP (instruction pointer) registers
+2. Print the address and the symbol of the nearlest symbol from instruction address
+3. Go to the next frame by obtaining next instruction address by `bp[1]`(= address pushsed by `call` instruction), and base address by `bp[0]`(= pushed onto the stack at at the beginning of function body, by compiler convention), and go back to step 1.
+4. Iterate over the steps until either bp or ip becomes null.
+
+ref: https://www.cs.rutgers.edu/~pxk/419/notes/frames.html
+
+=== Symbol resolution
+
+To get a nearest symbol from an instruction address, we can use `dladdr()` function.
+Caution: it returns 0 on FAILURE, and returns non-zero on SUCCESS :(
+
+
+=== Implementation
+
+A bit surprisingly, all of the register/symbol accesses are possible only with libc functions. Hence it is possible in Rust too, only with a `libc` create dependency.
+
+
+[sources,rust]
+----
+#[cfg(target_os = "macos")]
+unsafe fn reg_values(
+    context: &libc::ucontext_t,
+) -> (*const std::ffi::c_void, *const *const std::ffi::c_void) {
+    let ip = (*context.uc_mcontext).__ss.__rip as *const std::ffi::c_void;
+    let bp = (*context.uc_mcontext).__ss.__rbp as *const *const std::ffi::c_void;
+    (ip, bp)
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn reg_values(
+    context: &libc::ucontext_t,
+) -> (*const std::ffi::c_void, *const *const std::ffi::c_void) {
+    let ip = context.uc_mcontext.gregs[libc::REG_RIP as usize] as *const std::ffi::c_void;
+    let bp = context.uc_mcontext.gregs[libc::REG_RBP as usize] as *const *const std::ffi::c_void;
+    (ip, bp)
+}
+
+fn show_backtrace(context: &libc::ucontext_t) {
+    let mut frame_count = 0;
+
+    let (mut ip, mut bp) = unsafe { reg_values(context) };
+
+    while bp != ptr::null() && ip != ptr::null() {
+        let mut dlinfo: libc::Dl_info = unsafe { mem::zeroed() };
+        let mut symbol = "N/A".to_string();
+        let mut path = "N/A".to_string();
+        if unsafe { libc::dladdr(ip, &mut dlinfo as *mut libc::Dl_info) } != 0 {
+            symbol = unsafe { std::ffi::CStr::from_ptr(dlinfo.dli_sname) }
+                .to_str()
+                .unwrap()
+                .to_string();
+            path = unsafe { std::ffi::CStr::from_ptr(dlinfo.dli_fname) }
+                .to_str()
+                .unwrap()
+                .to_string();
+        }
+
+        frame_count += 1;
+        eprintln!("{}: {:p} {} at {}", frame_count, ip, symbol, path,);
+
+        let bpa = unsafe { std::slice::from_raw_parts(bp, 2) };
+
+        ip = bpa[1];
+        bp = bpa[0] as *const *const std::ffi::c_void;
+    }
+}
+----
+
+Example output:
+
+On Mac, it worked well:
+----
+Signal num: 27 on ThreadId(1), ucontext=0x7ffee5a177d0
+1: 0x7fff73b67bf6 write at /usr/lib/system/libsystem_kernel.dylib
+2: 0x10a1f6f93 _ZN16blocked_app_demo6Reader3new17h1caac72ede0d736fE at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+3: 0x10a1f8cca _ZN16blocked_app_demo4main17h21b57f4edb2463f5E at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+4: 0x10a1f037e _ZN4core3ops8function6FnOnce9call_once17hab677c5facc27501E at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+5: 0x10a1e7af1 _ZN3std10sys_common9backtrace28__rust_begin_short_backtrace17h448366c8d759193dE at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+6: 0x10a1e7204 _ZN3std2rt10lang_start28_$u7b$$u7b$closure$u7d$$u7d$17h672cb957a576134aE at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+7: 0x10a21bf04 _ZN3std2rt19lang_start_internal17h142c31071fd0e513E at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+8: 0x10a1e71e1 _ZN3std2rt10lang_start17h56a5f6009446d0cdE at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+9: 0x10a1f9752 main at /Users/xyz/blocked-app-demo/target/debug/blocked-app-demo
+10: 0x7fff73a23cc9 start at /usr/lib/system/libdyld.dylib
+----
+
+However on linux, it didn't work:
+
+----
+Signal num: 27 on ThreadId(3), ucontext=0x7f4c8df8b880
+addr[RBP] = 0x7f4c8df8b8f8, addr[RBP + 1] = 0x7f4c8df8b900
+----
+
+The value of RBP reg is 0.
+After a bit of research I turned out that it is due to the fact that the assembly generated by rust compiler on linux does not use rbp register.
+
+No `push %rbp` at the beginning of the function.
+----
+$ cargo rustc -- --emit asm
+
+$ grep -A 20 '^_ZN.*prepare' target/debug/deps/*.s
+_ZN67_$LT$blocked_app_demo..Reader$u20$as$u20$blocked_app_demo..Task$GT$7prepare17h42a08811c0a67fc7E:
+.Lfunc_begin681:
+        .loc    1 71 0 is_stmt 1
+        .cfi_startproc
+        .cfi_personality 155, DW.ref.rust_eh_personality
+        .cfi_lsda 27, .Lexception104
+        subq    $168, %rsp
+        .cfi_def_cfa_offset 176
+        movq    %rdi, 144(%rsp)
+.Ltmp3699:
+----
+
+
+Seems it's just possible depending on compiler implementation: https://stackoverflow.com/questions/17338983/retrieve-the-content-of-ebp-register-in-linux
