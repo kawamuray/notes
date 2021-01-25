@@ -1,0 +1,272 @@
+== async-profiler internal
+
+How does it work? From `profiler.sh PID` to write the output.
+
+
+=== JVMTI entrypoint
+
+It is a JVMTI agent, so the entrypoint should be JVMTI agent's entry point.
+
+[source,java]
+----
+// vmEntry.cpp
+extern "C" JNIEXPORT jint JNICALL
+Agent_OnAttach(JavaVM* vm, char* options, void* reserved) {
+...
+    Profiler::_instance.run(args);
+----
+
+1. Profiler has singleton instance
+2. Call `Profiler::run`
+
+=== Profiler::run
+
+[source,java]
+----
+void Profiler::run(Arguments& args) {
+...
+    } else {
+        std::ofstream out(args._file, std::ios::out | std::ios::trunc);
+        if (out.is_open()) {
+            runInternal(args, out);
+            out.close();
+...
+}
+----
+
+1. Open output stream (`-f` option)
+2. Call `runInternal`
+
+
+=== Profiler::runInternal => Profiler::start
+
+[source,java]
+----
+Error Profiler::start(Arguments& args, bool reset) {
+...
+    error = _engine->start(args);
+...
+----
+
+1. Call `Engine::start`
+
+The `_engine` here depends on event type (`-e` option).
+Determined by `Profiler::selectEngine`.
+
+[source,java]
+----
+Engine* Profiler::selectEngine(const char* event_name) {
+    if (strcmp(event_name, EVENT_CPU) == 0) {
+        return PerfEvents::supported() ? (Engine*)&perf_events : (Engine*)&wall_clock;
+    } else if (strcmp(event_name, EVENT_ALLOC) == 0) {
+        return &alloc_tracer;
+    } else if (strcmp(event_name, EVENT_LOCK) == 0) {
+        return &lock_tracer;
+    } else if (strcmp(event_name, EVENT_WALL) == 0) {
+        return &wall_clock;
+    } else if (strcmp(event_name, EVENT_ITIMER) == 0) {
+        return &itimer;
+    } else if (strchr(event_name, '.') != NULL) {
+        return &instrument;
+    } else {
+        return &perf_events;
+    }
+}
+----
+
+So by default (cpu), its `PerfEvents`.
+
+=== PerfEvents::start
+
+[source,java]
+----
+Error PerfEvents::start(Arguments& args) {
+...
+    OS::installSignalHandler(SIGPROF, signalHandler);
+
+...
+    // Create perf_events for all existing threads
+    bool created = false;
+    ThreadList* thread_list = OS::listThreads();
+    for (int tid; (tid = thread_list->next()) != -1; ) {
+        created |= createForThread(tid);
+    }
+...
+}
+----
+
+1. Call `OS::installSignalHandler` with `SIGPROF`
+2. Call `PerfEvents::createForThread`.
+
+
+=== OS::installSignalHandler
+
+[source,java]
+----
+void OS::installSignalHandler(int signo, SigAction action, SigHandler handler) {
+...
+    } else {
+        sa.sa_sigaction = action;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    }
+
+    sigaction(signo, &sa, NULL);
+}
+----
+
+1. Setup signal by `sigaction`.
+
+Interestingly, `SIGVTALRM` is used for wallclock events:
+
+[source,java]
+----
+// wallClock.cpp
+Error WallClock::start(Arguments& args) {
+...
+    OS::installSignalHandler(SIGVTALRM, signalHandler);
+    OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
+----
+
+wallclock engine creates a separate thread that simply loops with `sleep()` and send the signal to the target thread by `tgkill(2)`.
+
+=== PerfEvents::createForThread
+
+[source,java]
+----
+bool PerfEvents::createForThread(int tid) {
+...
+    int fd = syscall(__NR_perf_event_open, &attr, tid, -1, -1, 0);
+...
+
+    struct f_owner_ex ex;
+    ex.type = F_OWNER_TID;
+    ex.pid = tid;
+
+    fcntl(fd, F_SETFL, O_ASYNC);
+    fcntl(fd, F_SETSIG, SIGPROF);
+    fcntl(fd, F_SETOWN_EX, &ex);
+...
+----
+
+1. Open perf event stream.
+2. Setup SIGPROF as the signal number for perf events.
+
+
+=== PerfEvents::signalHandler
+
+A task (thread) signaled will run this handler as it has given to `sigaction(2)`.
+
+[source,java]
+----
+void PerfEvents::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
+...
+    Profiler::_instance.recordSample(ucontext, counter, 0, NULL);
+----
+
+=== Profiler::recordSample
+
+[source,java]
+----
+void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmethodID event, ThreadState thread_state) {
+...
+    ASGCT_CallFrame* frames = _calltrace_buffer[lock_index]->_asgct_frames;
+...
+    if (_cstack != CSTACK_NO) {
+        num_frames += getNativeTrace(ucontext, frames + num_frames, tid);
+    }
+...
+    } else {
+        num_frames += getJavaTraceAsync(ucontext, frames + num_frames, _max_stack_depth);
+    }
+...
+    int call_trace_id = storeCallTrace(num_frames, frames, counter);
+    _jfr.recordExecutionSample(lock_index, tid, call_trace_id, thread_state);
+----
+
+1. Call `Profiler::getNativeTrace` => `Engine::getNativeTrace` (several impls available; `PerfEvents` uses register info from events, impl in `engine.hpp` (fallback?) implements its using `rbp` and `rip` registers walking.
+2. Call `Profiler::getJavaTraceAsync` - main part taking Java method's stack trace.
+3. Call `Profiler::storeCallTrace`.
+
+As you can see, both of `getNativeTrace` and `getJavaTraceAsync`(= `AsyncGetCallTrace`) requires `ucontext_t` as an argument.
+`ucontext_t` holds the value of registers, which of the task that has been interrupted (which is also the current task executing the signal handler), before it switched the context over to invoke the signal handler. So by its register values, it is possible to walk through the stack frames from top to down, making it possible to collect stack traces. The `ucontext_t` is given as the 3rd argument of the signal handler, when we set `SA_SIGINFO` flag.  link:./perf.adoc[perf] contains a section about how to implement a simple stack walking using this technique.
+
+=== Profiler::getJavaTraceAsync
+
+
+[source,java]
+----
+int Profiler::getJavaTraceAsync(void* ucontext, ASGCT_CallFrame* frames, int max_depth) {
+...
+    ASGCT_CallTrace trace = {jni, 0, frames};
+    VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+----
+
+1.  Call `VM::_asyncGetCallTrace`.
+
+=== VM::_asyncGetCallTrace
+
+It's dynamically linked `AsyncGetCallTrace`.
+
+[source,java]
+----
+void VM::init(JavaVM* vm, bool attach) {
+...
+    _libjvm = getLibraryHandle("libjvm.so");
+    _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(_libjvm, "AsyncGetCallTrace");
+    _getManagement = (JVM_GetManagement)dlsym(_libjvm, "JVM_GetManagement");
+----
+
+
+=== Profiler::storeCallTrace
+
+[source,java]
+----
+int Profiler::storeCallTrace(int num_frames, ASGCT_CallFrame* frames, u64 counter) {
+...
+    while (_hashes[i] != hash) {
+        if (_hashes[i] == 0) {
+            if (__sync_bool_compare_and_swap(&_hashes[i], 0, hash)) {
+                copyToFrameBuffer(num_frames, frames, &_traces[i]);
+                break;
+            }
+}
+----
+
+1. Store trace in `_traces[i]`.
+
+=== Profiler::runInternal(ACTION_DUMP)
+
+At the time to stop profiling (either by `./profiler.sh stop` or after configured duration), `Profiler::runInternal` is called again but with `ACTION_DUMP` argument.
+
+[source,java]
+----
+void Profiler::runInternal(Arguments& args, std::ostream& out) {
+    switch (args._action) {
+...
+        case ACTION_DUMP:
+            stop();
+            clearOutput();
+            switch (args._output) {
+                case OUTPUT_COLLAPSED:
+                    dumpCollapsed(out, args);
+                    break;
+                case OUTPUT_FLAMEGRAPH:
+                    dumpFlameGraph(out, args, false);
+                    break;
+                case OUTPUT_TREE:
+                    dumpFlameGraph(out, args, true);
+                    break;
+                case OUTPUT_TEXT:
+                    dumpSummary(out);
+                    if (args._dump_traces > 0) dumpTraces(out, args);
+                    if (args._dump_flat > 0) dumpFlat(out, args);
+                    break;
+                default:
+                    break;
+            }
+            break;
+}
+----
+
+1. Depending on the configured output, it calls the function to write the output.
+2. Output function takes traces from `_traces` field of the `Profiler` instance and prints it out.
