@@ -1,0 +1,37 @@
+== Goal evaluation path
+
+`GoalViolationDetector`: Thread calls `Goal#optimize` for each goals.
+
+
+`Goal#optimize` returns true/false by soft goals achivement, and throw exception on failing to achieve a hard goal.
+
+"A hard goal is one that must be satisfied (e.g. replica placement must be rack-aware). Soft goals on the other hand may be left unmet if doing so makes it possible to satisfy all the hard goals. The optimization would fail if the optimized results violate a hard goal. We have implemented the following hard and soft goals so far:"
+
+
+The goal implementation can use `actionAcceptance` to check if the modification it is now trying to, is acceptable by previously evaluated goals.
+
+=== `AbstractGoal#optimize`
+
+1. Capture a `ClusterModelStats`
+2. `initGoalState`
+3. iterate over `brokersToBalance` => default `clusterModel.brokers()`
+4. `rebalanceForBroker`
+5. `updateGoalState`
+6. Capture a `ClusterModelStats`
+7. Get a comparator by `clusterModelStatsComparator` and compare before/after stats, throw exception if 1. not in self-healing mode and 2. goal made the stats worse
+
+
+=== `LeaderBytesInDistributinGoal`
+
+1. In `initGoalState`, capture various information from `clusterModel`.
+2. In `brokersToBalance`, Iterate over `clusterModel.brokers()` and check if the actual nw band utilization (`broker.leadershipLoadForNwResources().expectedUtilizationFor(Resource.NW_IN)` = value obtained from metric) is more than `lowUtilizationThreshold` which is calculated by `_balancingConstraint.lowUtilizationThreshold(Resource.NW_IN)` (= set by configuration) * per-broker weight setting.
+3. In `rebalanceForBroker`, iterate over brokers sorted by nw in utilization, loop over its replicas and search for follower that can accept to take over leadership until the balancing broker's nw utilization goes below the threshold.
+4. To generate an action, `AbstractGoal#maybeApplyBalancingAction` is used. Which modifies `clusterModel` interanlly by `clusterModel.relocateLeadership`.
+5. Brokers that could not be balanced to get below the threshold nw utilization, stored in `_overLimitBrokerIds` and warn log is generated at `updateGoalStats`.
+
+The custom comparator `LeaderBytesInDistributionGoalStatsComparator` does the following:
+
+1. Take average nw in resource utilization from `stats` (apparently `ClusterModelStats#resourceUtilizationStats` provides various pre-aggregated,  per-resource utilization stats)
+2. Calculate the threshold by applying "balancedRatio" - an another configuration
+3. If the first stats's maximum value is less than the threshold, return "the first is preferred"
+4. otherwise, take stddev of two stats and return by comparing these values (less stddev is preferred)
