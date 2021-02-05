@@ -270,3 +270,327 @@ void Profiler::runInternal(Arguments& args, std::ostream& out) {
 
 1. Depending on the configured output, it calls the function to write the output.
 2. Output function takes traces from `_traces` field of the `Profiler` instance and prints it out.
+
+
+== JVM crash by assertion error: `guarantee(_nParked == 0) failed: invariant`
+
+Context: I was extending async-profiler's JVMTI to enable realtime stack capture streaming through external SIGPROF.
+
+Crash report:
+----
+#
+# A fatal error has been detected by the Java Runtime Environment:
+#
+#  Internal Error (os_linux.cpp:6082), pid=135346, tid=0x00007f11281fd700
+#  guarantee(_nParked == 0) failed: invariant
+#
+# JRE version: OpenJDK Runtime Environment (8.0_262-b10) (build 1.8.0_262-b10)
+# Java VM: OpenJDK 64-Bit Server VM (25.262-b10 mixed mode linux-amd64 compressed oops)
+...
+#
+# If you would like to submit a bug report, please visit:
+#   http://bugreport.java.com/bugreport/crash.jsp
+#
+
+---------------  T H R E A D  ---------------
+
+Current thread (0x00007f1150017000):  JavaThread "kafka-scheduler-8" daemon [_thread_blocked, id=135686, stack(0x00007f11280fd000,0x00007f11281fe000)]
+
+Stack: [0x00007f11280fd000,0x00007f11281fe000],  sp=0x00007f11281f9530,  free space=1009k
+Native frames: (J=compiled Java code, j=interpreted, Vv=VM code, C=native code)
+V  [libjvm.so+0xb5718d]  VMError::report_and_die()+0x15d
+V  [libjvm.so+0x506615]  report_vm_error(char const*, int, char const*, char const*)+0xa5
+V  [libjvm.so+0x942bd3]  os::PlatformEvent::park()+0x153
+V  [libjvm.so+0x8eeff8]  Monitor::ILock(Thread*)+0x248
+V  [libjvm.so+0x8ef946]  Monitor::lock_without_safepoint_check()+0x26
+V  [libjvm.so+0x9e01a6]  SafepointSynchronize::block(JavaThread*) [clone .part.140]+0x86
+V  [libjvm.so+0xaf9c48]  JavaThread::check_safepoint_and_suspend_for_native_trans(JavaThread*)+0x258
+V  [libjvm.so+0x74fae7]  jvmti_GetMethodName+0x117
+C  [libasyncProfiler.so+0x3059c]  FrameName::javaMethodName(_jmethodID*)+0x4c
+C  [libasyncProfiler.so+0x30d55]  FrameName::name(ASGCT_CallFrame&, bool)+0x275
+C  [libasyncProfiler.so+0x19e7a]  Profiler::dumpJsonEvent(int, int, CallTraceSample&, FrameName&)+0x32a
+C  [libasyncProfiler.so+0x1ade0]  Profiler::recordSample(void*, unsigned long long, int, _jmethodID*, ThreadState)+0x310
+C  [libpthread.so.0+0xf5f0]
+V  [libjvm.so+0x8eeff8]  Monitor::ILock(Thread*)+0x248
+V  [libjvm.so+0x8ef946]  Monitor::lock_without_safepoint_check()+0x26
+V  [libjvm.so+0x9e01a6]  SafepointSynchronize::block(JavaThread*) [clone .part.140]+0x86
+V  [libjvm.so+0xaf9c48]  JavaThread::check_safepoint_and_suspend_for_native_trans(JavaThread*)+0x258
+V  [libjvm.so+0xafa401]  JavaThread::check_special_condition_for_native_trans(JavaThread*)+0x11
+J 9441  java.io.FileDescriptor.sync()V (0 bytes) @ 0x00007f132e58d7bf [0x00007f132e58d6c0+0xff]
+J 9449 C1 kafka.server.checkpoints.CheckpointFile.liftedTree1$1(Lscala/collection/Iterable;)V (194 bytes) @ 0x00007f132e61d2fc [0x00007f132e61b720+0x1bdc]
+J 9447 C1 kafka.server.checkpoints.OffsetCheckpointFile.write(Lscala/collection/Map;)V (9 bytes) @ 0x00007f132d708dcc [0x00007f132d708be0+0x1ec]
+j  kafka.log.LogManager.$anonfun$checkpointLogStartOffsetsInDir$2(Lkafka/log/LogManager;Lscala/collection/Map;Ljava/io/File;Lkafka/server/checkpoints/OffsetCheckpointFile;)V+28
+j  kafka.log.LogManager.$anonfun$checkpointLogStartOffsetsInDir$2$adapted(Lkafka/log/LogManager;Lscala/collection/Map;Ljava/io/File;Lkafka/server/checkpoints/OffsetCheckpointFile;)Ljava/lang/Object;+4
+j  kafka.log.LogManager$$Lambda$1557.apply(Ljava/lang/Object;)Ljava/lang/Object;+16
+J 6968 C2 scala.Option.foreach(Lscala/Function1;)V (19 bytes) @ 0x00007f132e420984 [0x00007f132e420920+0x64]
+j  kafka.log.LogManager.$anonfun$checkpointLogStartOffsetsInDir$1(Lkafka/log/LogManager;Ljava/io/File;Lscala/collection/Map;)V+18
+j  kafka.log.LogManager.$anonfun$checkpointLogStartOffsetsInDir$1$adapted(Lkafka/log/LogManager;Ljava/io/File;Lscala/collection/Map;)Ljava/lang/Object;+3
+j  kafka.log.LogManager$$Lambda$1553.apply(Ljava/lang/Object;)Ljava/lang/Object;+12
+J 6968 C2 scala.Option.foreach(Lscala/Function1;)V (19 bytes) @ 0x00007f132e420984 [0x00007f132e420920+0x64]
+j  kafka.log.LogManager.checkpointLogStartOffsetsInDir(Ljava/io/File;)V+20
+j  kafka.log.LogManager.$anonfun$checkpointLogStartOffsets$1(Lkafka/log/LogManager;Ljava/io/File;)V+2
+j  kafka.log.LogManager.$anonfun$checkpointLogStartOffsets$1$adapted(Lkafka/log/LogManager;Ljava/io/File;)Ljava/lang/Object;+2
+j  kafka.log.LogManager$$Lambda$1547.apply(Ljava/lang/Object;)Ljava/lang/Object;+8
+J 7945 C2 scala.collection.mutable.ArrayBuffer.foreach(Lscala/Function1;)V (6 bytes) @ 0x00007f132e7ad5e8 [0x00007f132e7ad560+0x88]
+j  kafka.log.LogManager.checkpointLogStartOffsets()V+10
+j  kafka.log.LogManager.$anonfun$startup$6(Lkafka/log/LogManager;)V+1
+j  kafka.log.LogManager$$Lambda$805.apply$mcV$sp()V+4
+J 8816 C1 kafka.utils.KafkaScheduler.$anonfun$schedule$2(Lkafka/utils/KafkaScheduler;Ljava/lang/String;Lscala/Function0;)V (65 bytes) @ 0x00007f132dd11eac [0x00007f132dd11960+0x54c]
+J 8815 C1 kafka.utils.KafkaScheduler$$Lambda$749.apply$mcV$sp()V (16 bytes) @ 0x00007f132e360fd4 [0x00007f132e360f40+0x94]
+J 7856 C1 kafka.utils.CoreUtils$$anon$1.run()V (10 bytes) @ 0x00007f132d595b4c [0x00007f132d595a40+0x10c]
+J 9002 C2 java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run()V (59 bytes) @ 0x00007f132e470dc0 [0x00007f132e4709a0+0x420]
+j  java.util.concurrent.ThreadPoolExecutor.runWorker(Ljava/util/concurrent/ThreadPoolExecutor$Worker;)V+95
+j  java.util.concurrent.ThreadPoolExecutor$Worker.run()V+5
+j  java.lang.Thread.run()V+11
+v  ~StubRoutines::call_stub
+V  [libjvm.so+0x69c03e]  JavaCalls::call_helper(JavaValue*, methodHandle*, JavaCallArguments*, Thread*)+0xf5e
+V  [libjvm.so+0x699404]  JavaCalls::call_virtual(JavaValue*, KlassHandle, Symbol*, Symbol*, JavaCallArguments*, Thread*)+0x2c4
+V  [libjvm.so+0x699a19]  JavaCalls::call_virtual(JavaValue*, Handle, KlassHandle, Symbol*, Symbol*, Thread*)+0x59
+V  [libjvm.so+0x730ab1]  thread_entry(JavaThread*, Thread*)+0xa1
+V  [libjvm.so+0xafe902]  JavaThread::thread_main_inner()+0x212
+V  [libjvm.so+0x93a382]  java_start(Thread*)+0xf2
+C  [libpthread.so.0+0x7e65]
+----
+
+
+The following is the particular stack caused crash (began by signal handler):
+
+----
+V  [libjvm.so+0xb5718d]  VMError::report_and_die()+0x15d
+V  [libjvm.so+0x506615]  report_vm_error(char const*, int, char const*, char const*)+0xa5
+V  [libjvm.so+0x942bd3]  os::PlatformEvent::park()+0x153
+V  [libjvm.so+0x8eeff8]  Monitor::ILock(Thread*)+0x248
+V  [libjvm.so+0x8ef946]  Monitor::lock_without_safepoint_check()+0x26
+V  [libjvm.so+0x9e01a6]  SafepointSynchronize::block(JavaThread*) [clone .part.140]+0x86
+V  [libjvm.so+0xaf9c48]  JavaThread::check_safepoint_and_suspend_for_native_trans(JavaThread*)+0x258
+V  [libjvm.so+0x74fae7]  jvmti_GetMethodName+0x117
+C  [libasyncProfiler.so+0x3059c]  FrameName::javaMethodName(_jmethodID*)+0x4c
+C  [libasyncProfiler.so+0x30d55]  FrameName::name(ASGCT_CallFrame&, bool)+0x275
+C  [libasyncProfiler.so+0x19e7a]  Profiler::dumpJsonEvent(int, int, CallTraceSample&, FrameName&)+0x32a
+C  [libasyncProfiler.so+0x1ade0]  Profiler::recordSample(void*, unsigned long long, int, _jmethodID*, ThreadState)+0x310
+C  [libpthread.so.0+0xf5f0]
+----
+
+JVMTI's `GetMethodName` call.
+
+In `JvmtiEnv::GetMethodName`'s body I couldn't see where is it calling `JavaThread::check-safepoint_and_suspend_for_native_trans`, but it is clearly called by backtrace.
+
+[source,cpp]
+----
+jvmtiError
+JvmtiEnv::GetMethodName(Method* method_oop, char** name_ptr, char** signature_ptr, char** generic_ptr) {
+  NULL_CHECK(method_oop, JVMTI_ERROR_INVALID_METHODID);
+  JavaThread* current_thread  = JavaThread::current();
+
+  ResourceMark rm(current_thread); // get the utf8 name and signature
+  if (name_ptr == NULL) {
+    // just don't return the name
+  } else {
+    const char* utf8_name = (const char *) method_oop->name()->as_utf8();
+    *name_ptr = (char *) jvmtiMalloc(strlen(utf8_name)+1);
+    strcpy(*name_ptr, utf8_name);
+  }
+  if (signature_ptr == NULL) {
+    // just don't return the signature
+  } else {
+    const char* utf8_signature = (const char *) method_oop->signature()->as_utf8();
+    *signature_ptr = (char *) jvmtiMalloc(strlen(utf8_signature) + 1);
+    strcpy(*signature_ptr, utf8_signature);
+  }
+
+  if (generic_ptr != NULL) {
+    *generic_ptr = NULL;
+    Symbol* soop = method_oop->generic_signature();
+    if (soop != NULL) {
+      const char* gen_sig = soop->as_C_string();
+      if (gen_sig != NULL) {
+        jvmtiError err = allocate(strlen(gen_sig) + 1, (unsigned char **)generic_ptr);
+        if (err != JVMTI_ERROR_NONE) {
+          return err;
+        }
+        strcpy(*generic_ptr, gen_sig);
+      }
+    }
+  }
+  return JVMTI_ERROR_NONE;
+} /* end GetMethodName */
+----
+
+Climbing down the stack, I could confirm the `os::Platform::park` method at `os_linux.cpp` indeed has that assertion:
+
+[source,cpp]
+----
+void os::PlatformEvent::park() {       // AKA "down()"
+  // Invariant: Only the thread associated with the Event/PlatformEvent
+  // may call park().
+  // TODO: assert that _Assoc != NULL or _Assoc == Self
+  int v ;
+  for (;;) {
+      v = _Event ;
+      if (Atomic::cmpxchg (v-1, &_Event, v) == v) break ;
+  }
+  guarantee (v >= 0, "invariant") ;
+  if (v == 0) {
+     // Do this the hard way by blocking ...
+     int status = pthread_mutex_lock(_mutex);
+     assert_status(status == 0, status, "mutex_lock");
+     guarantee (_nParked == 0, "invariant") ;
+     ++ _nParked ;
+     while (_Event < 0) {
+        status = pthread_cond_wait(_cond, _mutex);
+        // for some reason, under 2.7 lwp_cond_wait() may return ETIME ...
+        // Treat this the same as if the wait was interrupted
+        if (status == ETIME) { status = EINTR; }
+        assert_status(status == 0 || status == EINTR, status, "cond_wait");
+     }
+     -- _nParked ;
+
+    _Event = 0 ;
+     status = pthread_mutex_unlock(_mutex);
+     assert_status(status == 0, status, "mutex_unlock");
+    // Paranoia to ensure our locked and lock-free paths interact
+    // correctly with each other.
+    OrderAccess::fence();
+  }
+  guarantee (_Event >= 0, "invariant") ;
+}
+----
+
+Apparently `_nParked` field keeps track on the entrance state to "park". According the the comment, `Invariant: Only the thread associated with the Event/PlatformEvent may call park()`,  it seems that PlatformEvent has associated Thread that can call `park()`. The type of `_Assoc` is `Thread *`.
+I couldn't get immediately the meaning of atomically decrementing the value of `_Event` field but looks like it's not related.
+
+After reading some code around, I couldn't imagine this part becomes an issue. I thought it shouldn't be the bug of this implementation since async-profiler's using `GetMethodName` a lot of times but has never caused JVM crash.
+
+Then I came up with one possibility that could cause this, namely, when the signal interrupted thread was already in this position, then the signal handler will attempt to re-enter this in it's call path, while the `_nParked` is still set to 1 by the original call stack (before interruption).
+
+This is likely the case because I see nearly the same stack trace at just below the stack pushed on by signal handler:
+
+----
+C  [libasyncProfiler.so+0x1ade0]  Profiler::recordSample(void*, unsigned long long, int, _jmethodID*, ThreadState)+0x310
+C  [libpthread.so.0+0xf5f0]
+V  [libjvm.so+0x8eeff8]  Monitor::ILock(Thread*)+0x248
+V  [libjvm.so+0x8ef946]  Monitor::lock_without_safepoint_check()+0x26
+V  [libjvm.so+0x9e01a6]  SafepointSynchronize::block(JavaThread*) [clone .part.140]+0x86
+V  [libjvm.so+0xaf9c48]  JavaThread::check_safepoint_and_suspend_for_native_trans(JavaThread*)+0x258
+V  [libjvm.so+0xafa401]  JavaThread::check_special_condition_for_native_trans(JavaThread*)+0x11
+----
+
+So the problem is that calling `GetMethodName` from inside the signal handler, which is executed by the original thread (task).
+
+
+I patched async-profiler to create a separate thread for resolving frame's signature and write it out to a file.
+Besides the call to `pthread_create`, the first main routine for the thread looked like this:
+
+
+[source,cpp]
+----
+void Profiler::eventWriterLoop() {
+    TraceEvent ev = { 0, nullptr };
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lck(_trace_events_lock);
+            _trace_events_cv.wait(lck, [this]{ return !_trace_events.empty(); });
+            if (!_trace_events.empty()) {
+                ev = _trace_events.front();
+                _trace_events.pop();
+            }
+        }
+        if (ev.tid) {
+            dumpJsonEvent(_out_fd, ev.tid, *ev.trace);
+            ev = { 0, nullptr };
+        }
+    }
+}
+----
+
+
+Then the output became like this:
+
+----
+\=== 2021-02-05 17:00:21.674 PID: 92640, TID: 92758 (kafka-scheduler), DURATION: 12708686 us
+Native Stack:
+  0: [0xffffffff894d4fb1] finish_task_switch
+  1: [0xffffffff89b80a09] schedule
+  2: [0xffffffff89512076] futex_wait_queue_me
+...
+\--------------------------------------------------------------------------------
+JVM Stack (took: 2021-02-05 17:00:21.674):
+  0: [0x7f7cf063e7b0] [jvmtiError 115]
+  1: [0x7f7cf06b5bb8] [jvmtiError 115]
+  2: [0x7f7cf0646fa0] [jvmtiError 115]
+  3: [0x7f7cf0595bb0] [jvmtiError 115]
+  4: [0x7f7cf06b42a8] [jvmtiError 115]
+...
+----
+
+
+According to the https://docs.oracle.com/javase/8/docs/platform/jvmti/jvmti.html#ErrorSection[Error Code in doc], `115` is `JVMTI_ERROR_UNATTACHED_THREAD (115)`.
+I've actually knew it by experience at development `wasmtime-java`. In order to call a JNI method (and this time I learn that JVMTI too), we must attach the thread to JVM first. https://github.com/kawamuray/wasmtime-java/blob/791b270e764348116e4cfe101d7105ccd944b738/wasmtime-jni/src/io_github_kawamuray_wasmtime_Func/imp.rs#L123
+
+
+So I modified the patch to be like:
+
+[source,cpp]
+----
+void Profiler::eventWriterLoop() {
+    // Need to attach this thread to JVM to make a call for JVMTI methods
+    JavaVM* jvm;
+    VM::jni()->GetJavaVM(&jvm);
+    void *env_ptr;
+    if (jvm->AttachCurrentThread(&env_ptr, NULL) != JNI_OK) {
+        std::cerr << "Failed to attach event writer thread to JVM" << std::endl;
+    }
+
+    TraceEvent ev = { 0, nullptr };
+...
+----
+
+but this ended up with JVM crash, caused by SEGV at this function.
+After some consideration I turns out that in order to call `VM::jni()->GetJavaVM(&jvm);`, which is also an JNI function, the thread must be attached.
+So this doesn't work, but fortunately `VM` class of async-profiler already held a `JavaVM` instance so I simply exposed it and used instead.
+
+
+[source,cpp]
+----
+void Profiler::eventWriterLoop() {
+    // Need to attach this thread to JVM to make a call for JVMTI methods
+    void *env_ptr;
+    if (VM::vm()->AttachCurrentThread(&env_ptr, NULL) != JNI_OK) {
+        std::cerr << "Failed to attach event writer thread to JVM" << std::endl;
+    }
+...
+}
+----
+
+
+Then it worked perfectly well. No crash so far.
+
+----
+\=== 2021-02-05 19:17:13.74 PID: 146563, TID: 146686 (kafka-scheduler), DURATION: 10000085 us
+Native Stack:
+  0: [0xffffffff894d4fb1] finish_task_switch
+  1: [0xffffffff89b80a09] schedule
+  2: [0xffffffff89512076] futex_wait_queue_me
+  3: [0xffffffff89512e1b] futex_wait
+  4: [0xffffffff89514b66] do_futex
+  5: [0xffffffff89515080] sys_futex
+  6: [0xffffffff89b8dede] system_call_fastpath
+  7: [0x7f76952109f5] [unknown]
+  8: [0x7f769429c08e] [unknown]
+  9: [0x7f767d8a4d2a] [unknown]
+  10: [0x7f767ea1a52c] [unknown]
+  11: [0xb9134315b912904c] [unknown]
+\--------------------------------------------------------------------------------
+JVM Stack (took: 2021-02-05 19:17:13.74):
+  0: [0x7f7454564810] pthread_cond_timedwait@@GLIBC_2.3.2
+  1: [0x7f74542b4030] Unsafe_Park
+  2: [0x7f74547662a0] sun.misc.Unsafe.park
+  3: [0x7f74546fae10] java.util.concurrent.locks.LockSupport.parkNanos
+  4: [0x7f7454720b40] java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos
+  5: [0x7f745471f350] java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take
+  6: [0x7f745471f348] java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take
+  7: [0x7f74547219a8] java.util.concurrent.ThreadPoolExecutor.getTask
+  8: [0x7f7454721910] java.util.concurrent.ThreadPoolExecutor.runWorker
+  9: [0x7f74546fae90] java.util.concurrent.ThreadPoolExecutor$Worker.run
+  10: [0x7f745476c9b0] java.lang.Thread.run
+----
