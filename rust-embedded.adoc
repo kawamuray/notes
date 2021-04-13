@@ -1,0 +1,22 @@
+== Let the emacs's lsp-mode to run rust-analyzer with correct setup for `cargo xbuild`
+
+
+There's a `lsp-rust-analyzer-run` command, but it only executes one command from predefined list of candidates, whcih is given by the rust-analizer rather than defined in elisp, so hard to inject that.
+
+It turns out the latest version of rust compiler has its own way to run cross build w/o changing the command line used for normal builds, according to the https://github.com/rust-osdev/cargo-xbuild/blob/master/README.md:[README of cargo-xbuild].
+
+To enable, the following lines must be added to the `.cargo/config` (or `.cargo/config.toml`).
+
+[source,toml]
+----
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+----
+
+Since building crates required for esp32/rust projects requires some feature flags enabled to build, we also need to add the following to the `Cargo.toml` file. It turns out we can use `default` as the key to specify the list of features enabled for the all crates, so that is consistent with `--features` option.
+
+[source,toml]
+----
+[features]
+default = ["xtensa-lx-rt/lx6", "xtensa-lx/lx6", "esp32-hal"]
+----
