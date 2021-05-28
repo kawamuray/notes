@@ -1,0 +1,169 @@
+== Field reference from closure and GC
+
+Having an object which has field A modified as `final`, is there a difference between refereincing it directly or via a local variable in closure?
+
+
+[source,java]
+----
+class A {
+    String a;
+    public Runnable runnable() {
+        return () -> foo(a);
+        // or
+        String local = a;
+        return () -> foo(local);
+    }
+}
+----
+
+
+=== Experiment with heapdump
+
+
+[source,java]
+----
+import java.util.concurrent.CompletableFuture;
+
+public class TestBlah {
+    private final CompletableFuture<Void> finalFut;
+    private CompletableFuture<Void> mutFut;
+
+    Runnable finalR;
+    Runnable mutR;
+    Runnable localR;
+
+    public TestBlah() {
+        finalFut = new CompletableFuture<>();
+        mutFut = new CompletableFuture<>();
+    }
+
+    static void complete(CompletableFuture<Void> cf) {
+        try {
+            Thread.sleep(1000000000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        cf.complete(null);
+    }
+
+    void setFinal() {
+        finalR = () -> complete(finalFut);
+    }
+
+    void setMut() {
+        mutR = () -> complete(mutFut);
+    }
+
+    void setLocal() {
+        CompletableFuture<Void> fut = finalFut;
+        localR = () -> complete(fut);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        TestBlah blah = new TestBlah();
+        blah.setFinal();
+        blah.setMut();
+        blah.setLocal();
+
+        System.err.println("Ready");
+        Thread.sleep(100000000);
+    }
+}
+----
+
+and then took a heapdump with `jmap -dump:live,format=b,file=...`
+
+==== Result
+
+
+* `finalR` holds reference to `TestBlah`
+* `mutR` holds reference to `TestBlah`
+* `localR` holds reference to `CompletableFuture`
+
+
+=== Experiment by GC
+
+[source,java]
+----
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+public class TestBlah2 {
+    private final String title;
+    private final CompletableFuture<Void> finalFut;
+    private CompletableFuture<Void> mutFut;
+
+    Runnable runnable;
+
+    public TestBlah2(String title) {
+        this.title = title;
+        finalFut = new CompletableFuture<>();
+        mutFut = new CompletableFuture<>();
+    }
+
+    static void complete(CompletableFuture<Void> cf) {
+        try {
+            Thread.sleep(1000000000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        cf.complete(null);
+    }
+
+    void setFinal() {
+        runnable = () -> complete(finalFut);
+    }
+
+    void setMut() {
+        runnable = () -> complete(mutFut);
+    }
+
+    void setLocal() {
+        CompletableFuture<Void> fut = finalFut;
+        runnable = () -> complete(fut);
+    }
+
+    @Override
+    protected void finalize() throws Throwable {
+        System.err.println("GCed " + title);
+    }
+
+    static List<Runnable> setUp() {
+        List<Runnable> runnables = new ArrayList<>();
+        TestBlah2 finalRef = new TestBlah2("final ref");
+        finalRef.setFinal();
+        runnables.add(finalRef.runnable);
+        TestBlah2 mutRef = new TestBlah2("mut ref");
+        mutRef.setMut();
+        runnables.add(mutRef.runnable);
+        TestBlah2 localRef = new TestBlah2("local ref");
+        localRef.setLocal();
+        runnables.add(localRef.runnable);
+        return runnables;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        List<Runnable> runnables = setUp();
+
+        System.gc();
+        System.err.println("GC 1 done");
+        System.gc();
+        System.err.println("GC done");
+        Thread.sleep(100000000);
+    }
+}
+----
+
+
+==== Result
+
+----
+GC 1 done
+GCed local ref
+GC done
+----
+
+=== Conclusion
+
+Giving a reference to a field via local variable helps closure to minimize scope of reference to capture hence it's better in terms of GC.
