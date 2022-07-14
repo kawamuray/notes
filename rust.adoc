@@ -205,3 +205,61 @@ impl std::ops::Deref for Foo {
     }
 }
 ----
+
+
+== When mutating Option to mutable borrow reference isn't allowed
+
+[source,rust]
+----
+    pub fn delete_duplicates(mut head: Option<Box<ListNode>>) -> Option<Box<ListNode>> {
+        let mut cur: Option<&mut Box<ListNode>> = head.as_mut();
+
+        while let Some(node) = &mut cur {
+            let node: &mut Box<ListNode> = node;
+            if let Some(next) = node.next.as_mut() {
+                if next.val == node.val {
+                    // remove next
+                    node.next = next.next.take();
+                    continue;
+                }
+            }
+            cur = node.next.as_mut();
+        }
+
+        head
+    }
+----
+
+This isn't allowed.
+Why? Because at the end of the loop, `node` still lives and it has borrowed from `cur` at the beginning of the loop. So the reference `&mut Box<ListNode>` in `cur` is still valid and should live longer. In order to replace `cur` by `node.next.as_mut()`, we need to clear `cur` and release the mutable reference in it first.
+
+So changing the line to be this works:
+
+[source,rust]
+----
+            cur = cur.take().unwrap().next;
+----
+
+Alternatively, maybe we should just take `cur` in every loop with putting the value back when we don't need to change it:
+
+[source,rust]
+----
+    pub fn delete_duplicates(mut head: Option<Box<ListNode>>) -> Option<Box<ListNode>> {
+        let mut cur: Option<&mut Box<ListNode>> = head.as_mut();
+
+        while let Some(node) = cur {
+            let node: &mut Box<ListNode> = node;
+            if let Some(next) = node.next.as_mut() {
+                if next.val == node.val {
+                    // remove next
+                    node.next = next.next.take();
+                    cur = Some(node);
+                    continue;
+                }
+            }
+            cur = node.next.as_mut();
+        }
+
+        head
+    }
+----
