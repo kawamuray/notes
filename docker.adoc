@@ -15,3 +15,9 @@ No need of manual `setcap` since running process itself already granted.
 Context: jtaskstats attaching to target JVM.
 
 `docker run --cap-add SYS_PTRACE`
+
+== Disable network outbound for a container
+
+Context: To sandbox container process even for an outgoing network access.
+
+`docker run --network none`

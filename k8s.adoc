@@ -1,0 +1,124 @@
+== Edit imagePullPolicy (or whatever object configuration) of a running deployment
+
+`kubectl edit deployment my-deployment`
+
+
+== Run minikube on Mac
+
+Context: To run minikube locally on Mac, it requires docker (containerd) runtime. However, docker desktop for mac is now a subscription license.
+
+We can use https://github.com/lima-vm/lima[lima] to create a lightweight VM and run linux image inside, so that we can get a semi-locally running docker environment without docker desktop.
+
+[source,sh]
+----
+limactl start --name=default template://docker
+docker context create lima-default --docker "host=unix:///Users/xyz/.lima/default/sock/docker.sock"
+docker context use lima-default
+----
+
+We can start minikube on the above docker environment inside lima.
+
+[source,sh]
+----
+minikube start --container-runtime containerd
+----
+
+To re-create the whole minikube environment:
+
+[source,sh]
+----
+minikube delete --all --purge
+----
+
+== Run minikube on Mac with Docker Desktop for Mac
+
+1. Can(should) use docker as runtime
+2. Need to disable InUserNamespace feature gate to avoid `Exiting due to RUNTIME_ENABLE: inUserNamespace must not be true for docker` error.
+
+[source,sh]
+----
+minikube start --container-runtime=docker --network-plugin=cni --cni=cilium --feature-gates=KubeletInUserNamespace=false
+----
+
+== Let minikube to pull locally-built docker image
+
+Context: The minikube environment started with the above command does not refer a locally (on lima) running docker engine as a source of images to pull.
+
+Straightforward solution is to build (push) image on a docker daemon that is managed by minikube, but it is available only if we specify `docker` as the runtime:
+
+[source,sh]
+----
+minikube start --container-runtime docker
+----
+
+which actually fails and seems impossible on lima.
+
+Alternatively, it seems possible to use a manually started docker image registry and let minikube to refer it as a source of images: https://stackoverflow.com/questions/42564058/how-to-use-local-docker-images-with-minikube
+
+[source,sh]
+----
+docker run -d -p 5000:5000 --restart=always --name local-registry registry:2
+docker tag my-image localhost:5000/my-image
+docker push localhost:5000/my-image
+----
+
+Attempting to load image directly (from docker) w/o pushing it to local registry seems to fail.
+
+[source,sh]
+----
+minikube image load my-image
+❗  The image 'my-image' was not found; unable to add it to cache.
+----
+
+Attempting to run a k8s deployment directly referring local registry also seems to fail (perhaps because this localhost points to mac's localhost, rather than it of lima VM?)
+
+[source,sh]
+----
+kubectl create deployment my-example --image=localhost:5000/my-image
+----
+
+We need to let minikube "load" the image manually to make it work.
+
+[source,sh]
+----
+minikube image load localhost:5000/my-image
+----
+
+It is also required to change `imagePullPolicy` setting to `Never`. by `minikube edit`.
+
+== NetworkPolicy on minikube
+
+Context: Configuring NetworkPolicy on minikube seems to have no effect.
+
+https://minikube.sigs.k8s.io/docs/handbook/network_policy/
+
+By default, minikube isn't configured with any of network plugin, which is required to make a NetworkPolicy take an effect.
+It issues no error, warnings, allows to load NetworkPolicy, but it just doesn't do anything silently.
+
+To make NetworkPolicy take an effect on minikube, we need to start minikube with `--cni calico`.
+
+[source,sh]
+----
+minikube start --container-runtime containerd --cni calico
+----
+
+== Authenticate a remote k8s cluster for an image registry
+
+https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+
+[source,sh]
+----
+kubectl create secret docker-registry regcred --docker-server=<your-registry-server> --docker-username=<your-name> --docker-password=<your-pword> --docker-email=<your-email>
+----
+
+and we need to set a deployment config to use the created cred explicitly:
+
+[source,yaml]
+----
+spec:
+  containers:
+  - name: private-reg-container
+    image: <your-private-image>
+  imagePullSecrets:
+  - name: regcred
+----

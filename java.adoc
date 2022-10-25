@@ -167,3 +167,17 @@ GC done
 === Conclusion
 
 Giving a reference to a field via local variable helps closure to minimize scope of reference to capture hence it's better in terms of GC.
+
+
+== Parsing date with English style Month
+
+Context: Parse date like "September 25, 2022".
+
+[source,java]
+----
+DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.ENGLISH);
+LocalDate localDate = LocalDate.parse("September 25, 2022", formatter);
+----
+
+* `MMM` corresponds to short one like `Sep`
+* `MMMM` corresponds to long one like `September`

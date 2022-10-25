@@ -1,0 +1,9 @@
+== Crypt related
+
+
+=== Inspect .pem file of public key
+
+[source,sh]
+----
+openssl rsa -pubin -in key.pem -text -noout
+----
