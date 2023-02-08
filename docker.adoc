@@ -21,3 +21,9 @@ Context: jtaskstats attaching to target JVM.
 Context: To sandbox container process even for an outgoing network access.
 
 `docker run --network none`
+
+== Install docker on Rockey Linux
+
+1. https://docs.rockylinux.org/gemstones/docker/
+2. `sudo usermod -a -G docker $(whoami)`
+3. re-login
