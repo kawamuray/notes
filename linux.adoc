@@ -37,3 +37,52 @@ static const struct genl_ops taskstats_ops[] = {
 ...
 ----
 4. So any operations with `GENL_ADMIN_PERM` set requires `CAP_NET_ADMIN`.
+
+
+== Spotting the consumer of high "si" (= software interrupt) cpu mode
+
+Context: Single cpu core shows higher utilization than others and dominator part is "si"
+
+Check which software interruption has more on the core:
+
+[source,sh]
+----
+cat /proc/softirqs
+----
+
+`ksoftirqd/X` => core-dedicated kernel task to handle software interruption. Handles IRQ from NIC driver for handling the received packet as well.
+How interruption coops with NIC: https://www.sobyte.net/post/2022-10/linux-net-snd-rcv/
+
+Check the root interruption triggering softare interruption.
+
+[source,sh]
+----
+cat /proc/interrupts
+----
+
+`PCI-MSI-edge      virtio0-input.0` => network receive.
+
+Check affinity setting of the specific IRQ number:
+ref: https://portal.nutanix.com/page/documents/kbs/details?targetId=kA07V000000LUR3SAO
+
+[source,sh]
+-----
+cat /proc/irq/27/smp_affinity
+00080 # = bitmask in hex. b10000000 = 7th cpu
+----
+
+Set different affinity (`f` = no affinity so a random core can take care of it)
+
+[source,sh]
+----
+echo 2 | sudo tee /proc/irq/27/smp_affinity
+----
+
+Tune multiple cores to handle softirq for network I/O: https://portal.nutanix.com/page/documents/kbs/details?targetId=kA00e000000Cqu6CAC&a=7f26f5a5df5007b03a08764592475ac9b6df1e2553aed029487631b824b8f56fff5dcc4a7a368d53
+
+== Check which tasks resides on the particular cpu core
+
+[source,sh]
+----
+ps -e -T -o pid,tid,psr,comm  | grep ' 7 ' # cpu7 for example
+----
