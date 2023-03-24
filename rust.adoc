@@ -263,3 +263,13 @@ Alternatively, maybe we should just take `cur` in every loop with putting the va
         head
     }
 ----
+
+== How to get well-printed rust backtrace at error?
+
+Use anyhow as the return type of main:
+
+[source,rust]
+----
+async fn main() -> anyhow::Result<()> {
+}
+----
