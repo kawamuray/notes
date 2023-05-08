@@ -503,3 +503,8 @@ Comparing `offcputime.py` between on the system (CentOS 7) and at latest bcc rep
 
 it seems that the function signature that is attached to kprobe evaluated against the original function's signature and silently fails to probe if they don't match. (any possible way to get that error?)
 The difference itself should be due to different kernel versions expected.
+
+
+== perf_event_open() fails by "No such file or directory" (ENOENT)
+
+In case of `attr.type` is kprobe, the wrong function name (kprobe point) specified in argument can cause ENOENT.
